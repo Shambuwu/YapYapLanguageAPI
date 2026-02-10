@@ -3,8 +3,10 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using YAPYAP;
+using BepInEx;
 
 [HarmonyPatch(typeof(UISettings), "Awake")]
 static class Patch_UISettings_Awake
@@ -70,11 +72,83 @@ static class Patch_UISettings_Awake
                     continue;
                 }
 
+                // create and populate a VoskLocalisation instance
                 var loc = ScriptableObject.CreateInstance<VoskLocalisation>();
+
+                // set language and name
                 SetPrivate(loc, "_language", ParseSystemLanguage(def.systemLanguage));
                 SetPrivate(loc, "_name", def.displayName);
-                SetPrivate(loc, "_modelPath", def.modelFolder);
-                SetPrivate(loc, "_filename", def.localisationFile);
+
+                // set model path: prefer absolute path recorded in registry, fallback to def.modelFolder
+                string modelPath = def != null && !string.IsNullOrEmpty(def.id) && LanguageRegistry.ModelPathById.TryGetValue(def.id, out var abs)
+                    ? abs
+                    : def?.modelFolder;
+                SetPrivate(loc, "_modelPath", modelPath);
+
+                // ensure filename is filename-only to avoid duplication when VoiceManager combines base path
+                string filenameOnly = string.IsNullOrEmpty(def?.localisationFile) ? string.Empty : Path.GetFileName(def.localisationFile);
+                SetPrivate(loc, "_filename", filenameOnly);
+                Debug.Log($"[YapYapLanguageAPI] For language '{def?.id}' set _filename = '{filenameOnly}' (source value: '{def?.localisationFile}')");
+
+                // attempt to copy the plugin-local localisation file to the game's expected localisation folder
+                try
+                {
+                    if (!string.IsNullOrEmpty(filenameOnly) && !string.IsNullOrEmpty(def?.localisationFile))
+                    {
+                        string pluginBase = Paths.PluginPath;
+                        var srcCandidates = new List<string>();
+
+                        // candidate1: languages.json value interpreted relative to plugin base (preserve slashes)
+                        srcCandidates.Add(Path.Combine(pluginBase, def.localisationFile.Replace('/', Path.DirectorySeparatorChar)));
+
+                        // candidate2: languages.json value interpreted as-is (in case it's absolute)
+                        srcCandidates.Add(def.localisationFile);
+
+                        // candidate3: filename-only in plugin base
+                        srcCandidates.Add(Path.Combine(pluginBase, filenameOnly));
+
+                        // normalize and dedupe candidates
+                        var srcUniq = srcCandidates
+                            .Where(p => !string.IsNullOrEmpty(p))
+                            .Select(p => Path.GetFullPath(p))
+                            .Distinct()
+                            .ToList();
+
+                        string srcFound = srcUniq.FirstOrDefault(File.Exists);
+                        string destDir = Path.Combine(Application.dataPath, "StreamingAssets", "Vosk", "Localisation");
+                        string dest = Path.Combine(destDir, filenameOnly);
+
+                        if (srcFound != null)
+                        {
+                            Directory.CreateDirectory(destDir);
+                            bool doCopy = true;
+                            if (File.Exists(dest))
+                            {
+                                var srcInfo = new FileInfo(srcFound);
+                                var dstInfo = new FileInfo(dest);
+                                doCopy = srcInfo.Length != dstInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc;
+                            }
+
+                            if (doCopy)
+                            {
+                                File.Copy(srcFound, dest, true);
+                                Debug.Log($"[YapYapLanguageAPI] Copied localisation '{filenameOnly}' from '{srcFound}' to '{dest}'");
+                            }
+                            else
+                            {
+                                Debug.Log($"[YapYapLanguageAPI] Localisation '{filenameOnly}' already up-to-date at '{dest}'");
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[YapYapLanguageAPI] Localisation source not found. Tried:\n  {string.Join("\n  ", srcUniq)}\nExpected dest: {dest}\nEnsure your localisation file exists in the plugin folder or adjust languages.json.");
+                        }
+                    }
+                }
+                catch (Exception exCopy)
+                {
+                    Debug.LogWarning($"[YapYapLanguageAPI] Failed to copy localisation file for '{def?.id}': {exCopy}");
+                }
 
                 current = current.Concat(new[] { loc }).ToArray();
                 added++;
@@ -104,7 +178,7 @@ static class Patch_UISettings_Awake
                 Debug.Log("[YapYapLanguageAPI] No new localisations added.");
             }
 
-            // --- Dropdown inspection + generic update attempt ---
+            // --- Dropdown update (preserve built-ins and append mod languages) ---
             try
             {
                 var uiField = typeof(UISettings).GetField("voiceLanguageSetting", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -122,11 +196,8 @@ static class Patch_UISettings_Awake
                 }
 
                 var dt = dropdown.GetType();
-                Debug.Log($"[YapYapLanguageAPI] Dropdown runtime type: {dt.FullName}");
-
                 var methods = dt.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-                // try to find a getter for existing options (zero params that returns IEnumerable<string> or string[] or List<string>)
                 MethodInfo getter = methods.FirstOrDefault(m =>
                 {
                     if (m.GetParameters().Length != 0) return false;
@@ -134,7 +205,6 @@ static class Patch_UISettings_Awake
                     return typeof(IEnumerable<string>).IsAssignableFrom(rt) || rt == typeof(string[]) || rt == typeof(List<string>);
                 });
 
-                // try to find a setter method that accepts IEnumerable<string> or string[]
                 MethodInfo setter = methods.FirstOrDefault(m =>
                 {
                     var ps = m.GetParameters();
@@ -143,7 +213,6 @@ static class Patch_UISettings_Awake
                     return typeof(IEnumerable<string>).IsAssignableFrom(pt) || pt == typeof(string[]);
                 });
 
-                // Build baseOptions either from getter or from VoiceManager.VoskLocalisations (preserve built-ins)
                 List<string> baseOptions = new List<string>();
                 if (getter != null)
                 {
@@ -152,7 +221,6 @@ static class Patch_UISettings_Awake
                         var got = getter.Invoke(dropdown, null);
                         if (got is IEnumerable<string> ie) baseOptions.AddRange(ie);
                         else if (got is string[] sa) baseOptions.AddRange(sa);
-                        else Debug.Log($"[YapYapLanguageAPI] Getter returned unsupported type: {got?.GetType().FullName}");
                     }
                     catch (Exception ex)
                     {
@@ -161,7 +229,7 @@ static class Patch_UISettings_Awake
                 }
                 else
                 {
-                    Debug.Log("[YapYapLanguageAPI] No dropdown getter found; will attempt to build options from VoiceManager.VoskLocalisations.");
+                    // build baseOptions from VoiceManager.VoskLocalisations (preserve built-in languages)
                     try
                     {
                         var vmList = vm.VoskLocalisations;
@@ -182,7 +250,6 @@ static class Patch_UISettings_Awake
                                 if (!baseOptions.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase)))
                                     baseOptions.Add(name);
                             }
-                            Debug.Log($"[YapYapLanguageAPI] Built base options from VoiceManager.VoskLocalisations ({baseOptions.Count} items).");
                         }
                     }
                     catch (Exception exVm)
@@ -191,7 +258,6 @@ static class Patch_UISettings_Awake
                     }
                 }
 
-                // Build the final options: keep baseOptions then append our display names, avoid duplicates
                 var finalOptions = new List<string>(baseOptions);
                 foreach (var ld in LanguageRegistry.Languages)
                 {
@@ -200,7 +266,6 @@ static class Patch_UISettings_Awake
                         finalOptions.Add(ld.displayName);
                 }
 
-                // final dedupe to be safe
                 finalOptions = finalOptions.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
                 if (setter != null)
@@ -210,28 +275,19 @@ static class Patch_UISettings_Awake
                     if (paramType == typeof(string[])) param = finalOptions.ToArray();
                     else if (paramType.IsAssignableFrom(typeof(List<string>))) param = finalOptions;
                     else if (typeof(IEnumerable<string>).IsAssignableFrom(paramType)) param = finalOptions;
-                    else
-                    {
-                        Debug.LogWarning($"[YapYapLanguageAPI] Found setter {setter.Name} but parameter type {paramType.FullName} is not compatible.");
-                        param = null;
-                    }
 
                     if (param != null)
                     {
                         try
                         {
                             setter.Invoke(dropdown, new object[] { param });
-                            Debug.Log($"[YapYapLanguageAPI] Invoked dropdown setter '{setter.Name}' to refresh options.");
+                            Debug.Log($"[YapYapLanguageAPI] Invoked dropdown setter to refresh options.");
                         }
                         catch (Exception ex)
                         {
                             Debug.LogError($"[YapYapLanguageAPI] Invoking dropdown setter threw: {ex}");
                         }
                     }
-                }
-                else
-                {
-                    Debug.LogWarning("[YapYapLanguageAPI] No dropdown setter accepting IEnumerable<string> or string[] found.");
                 }
             }
             catch (Exception exUi)
