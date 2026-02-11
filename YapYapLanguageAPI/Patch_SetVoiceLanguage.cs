@@ -36,12 +36,17 @@ class Patch_SetVoiceLanguage
         if (!string.IsNullOrEmpty(configuredPath))
             candidates.Add(configuredPath);
 
-        // If configuredPath looks relative, try interpreting it relative to the plugin folder
+        // If configuredPath looks relative, try interpreting it relative to the plugin folder and the dedicated subfolder
         try
         {
             var pluginBase = Paths.PluginPath;
             if (!string.IsNullOrEmpty(pluginBase) && !Path.IsPathRooted(configuredPath))
                 candidates.Add(Path.Combine(pluginBase, configuredPath));
+
+            // try the dedicated subfolder where user places resources
+            var pluginSub = Path.Combine(pluginBase, "GOOGNA_DEV_SQUAD-YapYapMoreLanguages", "YapYapMoreLanguages");
+            if (!string.IsNullOrEmpty(pluginSub) && !Path.IsPathRooted(configuredPath))
+                candidates.Add(Path.Combine(pluginSub, configuredPath));
         }
         catch { /* ignore if Paths not available */ }
 

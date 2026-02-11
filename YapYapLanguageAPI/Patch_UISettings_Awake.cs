@@ -101,11 +101,17 @@ static class Patch_UISettings_Awake
                         // candidate1: languages.json value interpreted relative to plugin base (preserve slashes)
                         srcCandidates.Add(Path.Combine(pluginBase, def.localisationFile.Replace('/', Path.DirectorySeparatorChar)));
 
+                        // candidate1b: also try the plugin dedicated subfolder
+                        srcCandidates.Add(Path.Combine(Path.Combine(pluginBase, "GOOGNA_DEV_SQUAD-YapYapMoreLanguages", "YapYapMoreLanguages"), def.localisationFile.Replace('/', Path.DirectorySeparatorChar)));
+
                         // candidate2: languages.json value interpreted as-is (in case it's absolute)
                         srcCandidates.Add(def.localisationFile);
 
                         // candidate3: filename-only in plugin base
                         srcCandidates.Add(Path.Combine(pluginBase, filenameOnly));
+
+                        // candidate4: filename-only in plugin subfolder
+                        srcCandidates.Add(Path.Combine(Path.Combine(pluginBase, "GOOGNA_DEV_SQUAD-YapYapMoreLanguages", "YapYapMoreLanguages"), filenameOnly));
 
                         // normalize and dedupe candidates
                         var srcUniq = srcCandidates
@@ -206,12 +212,12 @@ static class Patch_UISettings_Awake
                 });
 
                 MethodInfo setter = methods.FirstOrDefault(m =>
-                {
-                    var ps = m.GetParameters();
-                    if (ps.Length != 1) return false;
-                    var pt = ps[0].ParameterType;
-                    return typeof(IEnumerable<string>).IsAssignableFrom(pt) || pt == typeof(string[]);
-                });
+                    {
+                        var ps = m.GetParameters();
+                        if (ps.Length != 1) return false;
+                        var pt = ps[0].ParameterType;
+                        return typeof(IEnumerable<string>).IsAssignableFrom(pt) || pt == typeof(string[]);
+                    });
 
                 List<string> baseOptions = new List<string>();
                 if (getter != null)
