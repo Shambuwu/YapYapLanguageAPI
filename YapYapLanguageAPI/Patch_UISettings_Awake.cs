@@ -93,52 +93,30 @@ static class Patch_UISettings_Awake
                 // attempt to copy the plugin-local localisation file to the game's expected localisation folder
                 try
                 {
-                    if (!string.IsNullOrEmpty(filenameOnly) && !string.IsNullOrEmpty(def?.localisationFile))
+                    if (!string.IsNullOrEmpty(filenameOnly) && !string.IsNullOrEmpty(def?.localisationFile) && !string.IsNullOrEmpty(def?.sourcePluginPath))
                     {
-                        string pluginBase = Paths.PluginPath;
-                        var srcCandidates = new List<string>();
+                        // Use the sourcePluginPath to build the correct source path
+                        string normalizedLocFile = NormalizePath(def.localisationFile);
+                        string srcPath = Path.Combine(def.sourcePluginPath, normalizedLocFile);
 
-                        // candidate1: languages.json value interpreted relative to plugin base (preserve slashes)
-                        srcCandidates.Add(Path.Combine(pluginBase, def.localisationFile.Replace('/', Path.DirectorySeparatorChar)));
-
-                        // candidate1b: also try the plugin dedicated subfolder
-                        srcCandidates.Add(Path.Combine(Path.Combine(pluginBase, "GOOGNA_DEV_SQUAD-YapYapMoreLanguages", "YapYapMoreLanguages"), def.localisationFile.Replace('/', Path.DirectorySeparatorChar)));
-
-                        // candidate2: languages.json value interpreted as-is (in case it's absolute)
-                        srcCandidates.Add(def.localisationFile);
-
-                        // candidate3: filename-only in plugin base
-                        srcCandidates.Add(Path.Combine(pluginBase, filenameOnly));
-
-                        // candidate4: filename-only in plugin subfolder
-                        srcCandidates.Add(Path.Combine(Path.Combine(pluginBase, "GOOGNA_DEV_SQUAD-YapYapMoreLanguages", "YapYapMoreLanguages"), filenameOnly));
-
-                        // normalize and dedupe candidates
-                        var srcUniq = srcCandidates
-                            .Where(p => !string.IsNullOrEmpty(p))
-                            .Select(p => Path.GetFullPath(p))
-                            .Distinct()
-                            .ToList();
-
-                        string srcFound = srcUniq.FirstOrDefault(File.Exists);
                         string destDir = Path.Combine(Application.dataPath, "StreamingAssets", "Vosk", "Localisation");
                         string dest = Path.Combine(destDir, filenameOnly);
 
-                        if (srcFound != null)
+                        if (File.Exists(srcPath))
                         {
                             Directory.CreateDirectory(destDir);
                             bool doCopy = true;
                             if (File.Exists(dest))
                             {
-                                var srcInfo = new FileInfo(srcFound);
+                                var srcInfo = new FileInfo(srcPath);
                                 var dstInfo = new FileInfo(dest);
                                 doCopy = srcInfo.Length != dstInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc;
                             }
 
                             if (doCopy)
                             {
-                                File.Copy(srcFound, dest, true);
-                                Debug.Log($"[YapYapLanguageAPI] Copied localisation '{filenameOnly}' from '{srcFound}' to '{dest}'");
+                                File.Copy(srcPath, dest, true);
+                                Debug.Log($"[YapYapLanguageAPI] Copied localisation '{filenameOnly}' from '{srcPath}' to '{dest}'");
                             }
                             else
                             {
@@ -147,7 +125,7 @@ static class Patch_UISettings_Awake
                         }
                         else
                         {
-                            Debug.LogWarning($"[YapYapLanguageAPI] Localisation source not found. Tried:\n  {string.Join("\n  ", srcUniq)}\nExpected dest: {dest}\nEnsure your localisation file exists in the plugin folder or adjust languages.json.");
+                            Debug.LogWarning($"[YapYapLanguageAPI] Localisation source not found at: {srcPath}\nExpected dest: {dest}");
                         }
                     }
                 }
@@ -313,7 +291,7 @@ static class Patch_UISettings_Awake
         if (f != null) f.SetValue(obj, value);
     }
 
-    private static SystemLanguage ParseSystemLanguage(string value)
+    private static SystemLanguage ParseSystemLanguage(String value)
     {
         if (System.Enum.TryParse<SystemLanguage>(value, true, out var lang))
             return lang;
@@ -343,5 +321,17 @@ static class Patch_UISettings_Awake
         catch { /* swallow */ }
 
         return false;
+    }
+
+    /// <summary>
+    /// Normalize path separators to platform-specific format
+    /// </summary>
+    private static string NormalizePath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return path;
+
+        // Replace forward slashes with platform's directory separator
+        return path.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
     }
 }
